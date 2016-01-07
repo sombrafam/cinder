@@ -84,6 +84,7 @@ cinder.tests.unit.test_glusterfs
 cinder.tests.unit.test_gpfs
 cinder.tests.unit.test_hacking
 cinder.tests.unit.test_hitachi_hbsd_horcm_fc
+cinder.tests.unit.test_hitachi_hbsd_horcm_iscsi
 cinder.tests.unit.test_hitachi_hbsd_snm2_fc
 cinder.tests.unit.test_hitachi_hbsd_snm2_iscsi
 cinder.tests.unit.test_hitachi_hnas_backend

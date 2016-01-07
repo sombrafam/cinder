@@ -1,4 +1,4 @@
-# Copyright (C) 2014, Hitachi, Ltd.
+# Copyright (C) 2014, 2015, Hitachi, Ltd.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -12,587 +12,1038 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 #
-
-"""
-Self test for Hitachi Block Storage Driver
-"""
+"""Unit tests for Hitachi Block Storage Driver."""
 
 import mock
+from os_brick.initiator import connector as brick_connector
 
+from cinder import context
+from cinder import db
 from cinder import exception
 from cinder import test
+from cinder.tests.unit import fake_snapshot
+from cinder.tests.unit import fake_volume
+from cinder import utils
 from cinder.volume import configuration as conf
-from cinder.volume.drivers.hitachi import hbsd_basiclib
-from cinder.volume.drivers.hitachi import hbsd_common
+from cinder.volume import driver
 from cinder.volume.drivers.hitachi import hbsd_fc
 from cinder.volume.drivers.hitachi import hbsd_snm2
+from cinder.volume.drivers.hitachi import hbsd_utils
+from cinder.volume import utils as volume_utils
+
+START_TIME = 0
+
+SUCCEED = 0
+FAILED = 1
+STDOUT = ""
+STDERR = ""
+CMD_SUCCEED = (SUCCEED, STDOUT, STDERR)
+
+CONFIG_MAP = {
+    'storage_id': 'HUS110_1234',
+    'my_ip': '127.0.0.1',
+}
+
+COPY_METHOD_THIN = {'key': 'copy_method', 'value': 'THIN'}
+
+# cmd: auhgwwn -unit HUS110_1234 -refer
+AUHGWWN_RESULT = """
+Port  0A  Host Group Security  ON
+  Detected WWN
+    Name                              Port Name
+                                      0123456789ABCDEE
+                                      0123456789ABCDEF
+  Assigned WWN
+    Name                              Port Name         Host Group
+                                      0123456789ABCDEF  003:HBSD-%(my_ip)s
+  Assignable WWN
+    Name                              Port Name
+                                      0123456789ABCDEE
+Port  0B  Host Group Security  ON
+  Detected WWN
+    Name                              Port Name
+                                      0123456789ABCDEE
+                                      0123456789ABCDEF
+  Assigned WWN
+    Name                              Port Name         Host Group
+  Assignable WWN
+    Name                              Port Name
+                                      0123456789ABCDEE
+                                      0123456789ABCDEF
+Port  1A  Host Group Security  ON
+  Detected WWN
+    Name                              Port Name
+                                      0123456789ABCDEE
+                                      0123456789ABCDEF
+  Assigned WWN
+    Name                              Port Name         Host Group
+                                      0123456789ABCDEF  003:HBSD-%(my_ip)s
+  Assignable WWN
+    Name                              Port Name
+                                      0123456789ABCDEE
+Port  1B  Host Group Security  ON
+  Detected WWN
+    Name                              Port Name
+                                      0123456789ABCDEE
+                                      0123456789ABCDEF
+  Assigned WWN
+    Name                              Port Name         Host Group
+  Assignable WWN
+    Name                              Port Name
+                                      0123456789ABCDEE
+                                      0123456789ABCDEF
+""" % CONFIG_MAP
+
+# cmd: aufibre1 -unit HUS110_1234 -refer
+AUFIBRE1_RESULT = """
+ CTL Port Node Name Port Name Setting Current
+ 0 A 50060E801053C2E0 50060E801053C2E0 0000EF 272700
+ 0 B 50060E801053C2E1 50060E801053C2E1 0000EF 272600
+ 1 A 50060E801053C2E8 50060E801053C2E8 0000EF 272500
+ 1 B 50060E801053C2E9 50060E801053C2E9 0000EF 272400
+"""
+
+# cmd: auman -unit HUS110_1234 -help
+AUMAN_RESULT = """
+Hitachi Storage Navigator Modular 2
+Version 28.00
+Copyright (C) 2005, 2014, Hitachi, Ltd.
+
+Usage:
+  9500V, AMS, WMS, SMS, AMS2000, HUS100
+    auman [ -en | -jp ] command_name
+"""
+
+# cmd: audppool -unit HUS110_1234 -refer -detail -g -dppoolno 1
+AUDPPOOL_NO1_RESULT = """
+DP Pool : 1
+  Tier Mode                                 : Disable
+  RAID Level                                : 1(1D+1D)
+  Page Size                                 : 32MB
+  Stripe Size                               : 256KB
+  Type                                      : SAS
+  Rotational Speed                          : 15000rpm
+  Encryption                                : N/A
+  Status                                    : Normal
+  Reconstruction Progress                   : N/A
+  Capacity
+    Total Capacity                          : 264.0 GB
+    Replication Available Capacity          : 264.0 GB
+    Consumed Capacity
+      Total                                 : 20.0 GB
+      User Data                             : 20.0 GB
+      Replication Data                      : 0.0 GB
+      Management Area                       : 0.0 GB
+    Needing Preparation Capacity            : 0.0 GB
+  DP Pool Consumed Capacity
+    Current Utilization Percent             : 7%
+    Early Alert Threshold                   : 40%
+    Depletion Alert Threshold               : 50%
+    Notifications Active                    : Enable
+  Over Provisioning
+    Current Over Provisioning Percent       : 7%
+    Warning Threshold                       : 100%
+    Limit Threshold                         : 130%
+    Notifications Active                    : Disable
+    Limit Enforcement                       : Disable
+  Replication
+    Current Replication Utilization Percent : 7%
+    Replication Depletion Alert Threshold   : 40%
+    Replication Data Released Threshold     : 95%
+  Defined LU Count                          : 5
+"""
+
+# cmd: audppool -unit HUS110_1234 -refer -detail -g -dppoolno 2
+AUDPPOOL_NO2_RESULT = """
+DP Pool : 2
+"""
+
+# cmd: auhgdef -unit HUS110_1234 -refer
+AUHGDEF_REFER_RESULT = """
+Port 0A
+  Group  Host Group Name
+      0  G000
+      3  HBSD-127.0.0.1
+Port 1A
+  Group  Host Group Name
+      0  G000
+      3  HBSD-127.0.0.1
+Port 0B
+  Group  Host Group Name
+      0  G000
+      3  HBSD-127.0.0.1
+Port 1B
+  Group  Host Group Name
+      0  G000
+"""
+
+# cmd: auluref -unit HUS110_1234
+AULUREF_REFER_RESULT = """
+ LU Capacity Size Group Pool Mode Level Type Speed Encryption of Paths Status
+ 0 104857600 blocks 256KB N/A 2 Disable 1( 1D+1P) SAS7K 7200rpm N/A 0 Normal
+"""
+
+# method: _run_auluref for copy
+RUN_AULUREF_RESULT = """
+ LU Capacity Size Group Pool Mode Level Type Speed Encryption of Paths Status
+ 0 4194304 blocks 256KB N/A 30 N/A 5( 2D+1P) SAS7K 7200rpm N/A 1 Normal
+ 1 204800 blocks 256KB 0 N/A N/A 5( 4D+1P) SAS 10000rpm N/A 0 Normal
+ 2 4194304 blocks N/A N/A N/A N/A N/A N/A N/A N/A 0 N/A(V-VOL)
+ 3 409600 blocks 64KB 0 N/A N/A 5( 4D+1P) SAS 10000rpm N/A 0 Normal
+ 4 4194304 blocks 256KB N/A 30 N/A 5( 2D+1P) SAS7K 7200rpm N/A 1 Normal
+ 5 4194304 blocks N/A N/A N/A N/A N/A N/A N/A N/A 0 N/A(V-VOL)
+ 6 6291456 blocks 256KB 3 N/A N/A 1( 1D+1D) SAS7K 7200rpm N/A 0 Normal
+ 7 20971520 blocks 256KB N/A 50 N/A 5( 3D+1P) SAS 10000rpm N/A 1 Normal
+"""
+
+# cmd: auluref -unit HUS110_1234 -lu 0
+AULUREF_LU0_RESULT = """
+ LU Capacity Size Group Pool Mode Level Type Speed Encryption of Paths Status
+ 0 104857600 blocks 256KB N/A 2 Disable 1( 1D+1P) SAS7K 7200rpm N/A 0 Normal
+"""
+
+# cmd: auluref -unit HUS110_1234 -lu 3
+AULUREF_LU3_RESULT = ''
+
+# cmd: auluref -unit HUS110_1234 -lu 4
+AULUREF_LU4_RESULT = """
+ LU Capacity Size Group Pool Mode Level Type Speed Encryption of Paths Status
+ 4 104857600 blocks 256KB N/A 2 Disable 1( 1D+1P) SAS7K 7200rpm N/A 0 Normal
+"""
+
+# cmd: auluref -unit HUS110_1234 -lu 5
+AULUREF_LU5_RESULT = """
+ LU Capacity Size Group Pool Mode Level Type Speed Encryption of Paths Status
+ 5 104857600 blks 256KB N/A 2 Disable 1( 1D+1P) SAS7K 7200rpm N/A 0 N/A(V-VOL)
+"""
+
+# cmd: auluref -unit HUS110_1234 -lu 10
+AULUREF_LU10_RESULT = """
+ LU Capacity Size Group Pool Mode Level Type Speed Encryption of Paths Status
+ 10 104857600 blocks 256KB N/A 2 Disable 1( 1D+1P) SAS7K 7200rpm N/A 0 Normal
+"""
+
+# cmd: auluref -unit HUS110_1234 -lu 11
+AULUREF_LU11_RESULT = """
+ LU Capacity Size Group Pool Mode Level Type Speed Encryption of Paths Status
+ 11 104857600 blks 256KB N/A 2 Disable 1( 1D+1P) SAS7K 7200rpm N/A 0 N/A(V-VOL)
+"""
+
+# cmd: aureplicationlocal -unit HUS110_1234 -refer -pvol 0
+# ''
+
+# cmd: aureplicationlocal -unit HUS110_1234 -refer -pvol 4
+AUREPLICATIONLOCAL_PVOL4 = """
+SS_LU0004_LU0009                     4         9  Split(100%)                \
+                         SnapShot      ---:Ungrouped                N/A      \
+           1032
+"""
+
+# cmd: aureplicationlocal -unit HUS110_1234 -refer -svol 10
+AUREPLICATIONLOCAL_SVOL10 = """
+SS_LU0007_LU0010                     7        10  Split(100%)                \
+                         SnapShot      ---:Ungrouped                N/A      \
+           1032
+"""
+
+# cmd: auhgmap -unit HUS110_1234 -refer
+AUHGMAP_REFER_RESULT = """
+Port  Group                                 H-LUN    LUN
+  0A  003:HBSD-127.0.0.1                        2      6
+  1A  003:HBSD-127.0.0.1                        2      6
+"""
+
+EXECUTE_TABLE = {
+    ('auhgwwn', '-unit', CONFIG_MAP['storage_id'], '-refer'): (
+        SUCCEED, AUHGWWN_RESULT, STDERR),
+    ('aufibre1', '-unit', CONFIG_MAP['storage_id'], '-refer'): (
+        SUCCEED, AUFIBRE1_RESULT, STDERR),
+    ('auman', '-unit', CONFIG_MAP['storage_id'], '-help'): (
+        SUCCEED, AUMAN_RESULT, STDERR),
+    ('audppool', '-unit', CONFIG_MAP['storage_id'], '-refer', '-detail', '-g',
+     '-dppoolno', 1): (
+        SUCCEED, AUDPPOOL_NO1_RESULT, STDERR),
+    ('audppool', '-unit', CONFIG_MAP['storage_id'], '-refer', '-detail', '-g',
+     '-dppoolno', 2): (
+        SUCCEED, AUDPPOOL_NO2_RESULT, STDERR),
+    ('auhgdef', '-unit', CONFIG_MAP['storage_id'], '-add', '0', 'B', '-gname',
+     CONFIG_MAP['my_ip']): (
+        SUCCEED, STDOUT, STDERR),
+    ('auhgdef', '-unit', CONFIG_MAP['storage_id'], '-add', '1', 'B', '-gname',
+     CONFIG_MAP['my_ip']): (
+        FAILED, STDOUT, STDERR),
+    ('auhgdef', '-unit', CONFIG_MAP['storage_id'], '-refer'): (
+        SUCCEED, AUHGDEF_REFER_RESULT, STDERR),
+    ('auhgopt', '-unit', CONFIG_MAP['storage_id'], '-set', '0', 'B',
+     '-gno', None, '-platform', 'Linux', '-middleware', 'NotSpecified'): (
+        SUCCEED, STDOUT, STDERR),
+    ('auhgopt', '-unit', CONFIG_MAP['storage_id'], '-set', '1', 'B',
+     '-gno', None, '-platform', 'Linux', '-middleware', 'NotSpecified'): (
+        FAILED, STDOUT, STDERR),
+    ('auluref', '-unit', CONFIG_MAP['storage_id']): (
+        SUCCEED, AULUREF_REFER_RESULT, STDERR),
+    ('auluref', '-unit', CONFIG_MAP['storage_id'], '-lu', 0): (
+        SUCCEED, AULUREF_LU0_RESULT, STDERR),
+    ('auluref', '-unit', CONFIG_MAP['storage_id'], '-lu', 3): (
+        SUCCEED, AULUREF_LU3_RESULT, STDERR),
+    ('auluref', '-unit', CONFIG_MAP['storage_id'], '-lu', 4): (
+        SUCCEED, AULUREF_LU4_RESULT, STDERR),
+    ('auluref', '-unit', CONFIG_MAP['storage_id'], '-lu', 5): (
+        SUCCEED, AULUREF_LU5_RESULT, STDERR),
+    ('auluref', '-unit', CONFIG_MAP['storage_id'], '-lu', 10): (
+        SUCCEED, AULUREF_LU10_RESULT, STDERR),
+    ('auluref', '-unit', CONFIG_MAP['storage_id'], '-lu', 11): (
+        SUCCEED, AULUREF_LU11_RESULT, STDERR),
+    ('auhgmap', '-unit', CONFIG_MAP['storage_id'], '-refer'): (
+        SUCCEED, AUHGMAP_REFER_RESULT, STDERR),
+    ('auluadd', '-unit', CONFIG_MAP['storage_id'], '-lu', 1, '-dppoolno', '1',
+     '-size', '1g'): (
+        SUCCEED, STDOUT, STDERR),
+    ('aureplicationlocal', '-unit', CONFIG_MAP['storage_id'], '-refer',
+     '-pvol', 4): (
+        SUCCEED, AUREPLICATIONLOCAL_PVOL4, STDERR),
+    ('aureplicationlocal', '-unit', CONFIG_MAP['storage_id'], '-refer',
+     '-svol', 10): (
+        SUCCEED, AUREPLICATIONLOCAL_SVOL10, STDERR),
+}
+
+DEFAULT_CONNECTOR = {
+    'ip': CONFIG_MAP['my_ip'],
+    'wwpns': ['0123456789abcdef'],
+    'initiator': 'iqn-initiator',
+    'multipath': False,
+}
+
+TEST_VOLUME0 = {
+    'id': 'test-volume0',
+    'name': 'test-volume0',
+    'provider_location': '0',
+    'size': 128,
+    'status': 'available',
+}
+
+TEST_VOLUME1 = {
+    'id': 'test-volume1',
+    'name': 'test-volume1',
+    'provider_location': '1',
+    'size': 256,
+    'status': 'available',
+}
+
+TEST_VOLUME2 = {
+    'id': 'test-volume2',
+    'name': 'test-volume2',
+    'provider_location': None,
+    'size': 128,
+    'status': 'creating',
+}
+
+TEST_VOLUME3 = {
+    'id': 'test-volume3',
+    'name': 'test-volume3',
+    'provider_location': '3',
+    'size': 128,
+    'status': 'available',
+}
+
+TEST_VOLUME4 = {
+    'id': 'test-volume4',
+    'name': 'test-volume4',
+    'provider_location': '4',
+    'size': 128,
+    'status': 'available',
+}
+
+TEST_VOLUME5 = {
+    'id': 'test-volume5',
+    'name': 'test-volume5',
+    'provider_location': '5',
+    'size': 128,
+    'status': 'in-use',
+}
+
+TEST_VOLUME6 = {
+    'id': 'test-volume6',
+    'name': 'test-volume6',
+    'provider_location': '6',
+    'size': 128,
+    'status': 'available',
+}
+
+TEST_VOLUME7 = {
+    'id': 'test-volume7',
+    'name': 'test-volume7',
+    'provider_location': '7',
+    'size': 128,
+    'status': 'available',
+}
+
+CTXT = context.get_admin_context()
+
+TEST_VOLUME_OBJ = {
+    'test-volume0': fake_volume.fake_volume_obj(CTXT, **TEST_VOLUME0),
+    'test-volume1': fake_volume.fake_volume_obj(CTXT, **TEST_VOLUME1),
+    'test-volume2': fake_volume.fake_volume_obj(CTXT, **TEST_VOLUME2),
+    'test-volume3': fake_volume.fake_volume_obj(CTXT, **TEST_VOLUME3),
+    'test-volume4': fake_volume.fake_volume_obj(CTXT, **TEST_VOLUME4),
+    'test-volume5': fake_volume.fake_volume_obj(CTXT, **TEST_VOLUME5),
+    'test-volume6': fake_volume.fake_volume_obj(CTXT, **TEST_VOLUME6),
+    'test-volume7': fake_volume.fake_volume_obj(CTXT, **TEST_VOLUME7),
+}
+
+TEST_VOLUME_TABLE = {
+    'test-volume0': fake_volume.fake_db_volume(**TEST_VOLUME0),
+    'test-volume1': fake_volume.fake_db_volume(**TEST_VOLUME1),
+    'test-volume2': fake_volume.fake_db_volume(**TEST_VOLUME2),
+    'test-volume3': fake_volume.fake_db_volume(**TEST_VOLUME3),
+    'test-volume4': fake_volume.fake_db_volume(**TEST_VOLUME4),
+    'test-volume5': fake_volume.fake_db_volume(**TEST_VOLUME5),
+    'test-volume6': fake_volume.fake_db_volume(**TEST_VOLUME6),
+    'test-volume7': fake_volume.fake_db_volume(**TEST_VOLUME7),
+}
 
 
-def _exec_hsnm(*args, **kargs):
-    return HBSDSNM2FCDriverTest.hsnm_vals.get(args)
+def _execute(*args, **kargs):
+    cmd = args[6:] if args[2] == 'STONAVM_HOME=/usr/stonavm' else args
+    result = EXECUTE_TABLE.get(cmd, CMD_SUCCEED)
+    return result
 
 
-def _exec_hsnm_get_lu_ret_err(*args, **kargs):
-    return HBSDSNM2FCDriverTest.hsnm_get_lu_ret_err.get(args)
+def _brick_get_connector_properties(*args, **kwargs):
+    return DEFAULT_CONNECTOR
 
 
-def _exec_hsnm_get_lu_vol_type_err(*args, **kargs):
-    return HBSDSNM2FCDriverTest.hsnm_get_lu_vol_type_err.get(args)
+def _connect_volume(*args, **kwargs):
+    return {'path': u'/dev/disk/by-path/xxxx', 'type': 'block'}
 
 
-def _exec_hsnm_get_lu_dppool_err(*args, **kargs):
-    return HBSDSNM2FCDriverTest.hsnm_get_lu_dppool_err.get(args)
+def _disconnect_volume(*args, **kwargs):
+    pass
 
 
-def _exec_hsnm_get_lu_size_err(*args, **kargs):
-    return HBSDSNM2FCDriverTest.hsnm_get_lu_size_err.get(args)
+def _volume_get(context, volume_id):
+    return TEST_VOLUME_TABLE.get(volume_id)
 
 
-def _exec_hsnm_get_lu_num_port_err(*args, **kargs):
-    return HBSDSNM2FCDriverTest.hsnm_get_lu_num_port_err.get(args)
+def _volume_admin_metadata_get(context, volume_id):
+    return {'fake_key': 'fake_value'}
+
+
+def _volume_metadata_update(context, volume_id, metadata, delete):
+    pass
+
+
+def _snapshot_metadata_update(context, snapshot_id, metadata, delete):
+    pass
+
+
+def _attach_volume(self, context, volume, properties, remote=False):
+    return {'device': {'path': 'fake_path'}}
+
+
+def _detach_volume(self, context, attach_info, volume, properties,
+                   force=False, remote=False):
+    pass
+
+
+def _copy_volume(srcstr, deststr, size_in_m, blocksize, sync=False,
+                 execute=utils.execute, ionice=None, throttle=None):
+    pass
+
+
+def _fake_run_auluref(*args, **kwargs):
+    return RUN_AULUREF_RESULT
 
 
 class HBSDSNM2FCDriverTest(test.TestCase):
     """Test HBSDSNM2FCDriver."""
 
-    audppool_result = "  DP                RAID                               \
-                        Current Utilization  Current Over          Replication\
- Available        Current Replication                    Rotational \
-                                                                              \
-                                                                       Stripe \
- Needing Preparation\n\
-  Pool  Tier Mode   Level         Total Capacity        Consumed Capacity     \
-   Percent              Provisioning Percent  Capacity                     \
-Utilization Percent  Type                   Speed  Encryption  Status         \
-                                                                        \
-Reconstruction Progress                          Size    Capacity\n\
-     30  Disable       1( 1D+1D)           532.0 GB                   2.0 GB  \
-                     1%                24835%                 532.0 GB        \
-               1%  SAS                 10000rpm  N/A         Normal           \
-                                                                      N/A     \
-                                          256KB                 0.0 GB"
-
-    aureplicationlocal_result = "Pair Name                          LUN  Pair \
-LUN  Status                                              Copy Type    Group   \
-    Point-in-Time  MU Number\n\
-                                     0         10  0 Split( 99%)             \
-                        ShadowImage   ---:Ungrouped                        N/A\
-                   "
-
-    auluref_result = "                            Stripe  RAID     DP    Tier \
-  RAID                           Rotational  Number\n\
-   LU       Capacity        Size    Group    Pool  Mode     Level        Type\
-                   Speed  of Paths  Status\n\
-    0       2097152 blocks   256KB      0       0  Enable     0  Normal"
-
-    auluref_result1 = "                           Stripe  RAID     DP    Tier \
-  RAID                           Rotational  Number\n\
-   LU       Capacity        Size    Group    Pool  Mode     Level        Type\
-                   Speed  of Paths  Status\n\
-    0       2097152 blocks   256KB      0       0  Enable     0  DUMMY"
-
-    auhgwwn_result = "Port 00 Host Group Security  ON\n  Detected WWN\n    \
-Name                              Port Name         Host Group\n\
-HBSD-00                              10000000C97BCE7A  001:HBSD-01\n\
-  Assigned WWN\n    Name                              Port Name         \
-Host Group\n    abcdefg                           10000000C97BCE7A  \
-001:HBSD-01"
-
-    aufibre1_result = "Port Information\n\
-                                                    Port Address\n  CTL  Port\
-   Node Name          Port Name          Setting Current\n    0     0   \
-50060E801053C2E0   50060E801053C2E0   0000EF  272700"
-
-    auhgmap_result = "Mapping Mode = ON\nPort  Group                          \
-    H-LUN    LUN\n  00  001:HBSD-00                               0   1000"
-
-    hsnm_vals = {
-        ('audppool', '-unit None -refer -g'): [0, "%s" % audppool_result, ""],
-        ('aureplicationlocal',
-         '-unit None -create -si -pvol 1 -svol 1 -compsplit -pace normal'):
-        [0, "", ""],
-        ('aureplicationlocal',
-         '-unit None -create -si -pvol 3 -svol 1 -compsplit -pace normal'):
-        [1, "", ""],
-        ('aureplicationlocal', '-unit None -refer -pvol 1'):
-        [0, "%s" % aureplicationlocal_result, ""],
-        ('aureplicationlocal', '-unit None -refer -pvol 3'):
-        [1, "", "DMEC002015"],
-        ('aureplicationlocal', '-unit None -refer -svol 3'):
-        [1, "", "DMEC002015"],
-        ('aureplicationlocal', '-unit None -simplex -si -pvol 1 -svol 0'):
-        [0, "", ""],
-        ('auluchgsize', '-unit None -lu 1 -size 256g'):
-        [0, "", ""],
-        ('auludel', '-unit None -lu 1 -f'): [0, 0, ""],
-        ('auludel', '-unit None -lu 3 -f'): [1, 0, ""],
-        ('auluadd', '-unit None -lu 1 -dppoolno 30 -size 128g'): [0, 0, ""],
-        ('auluadd', '-unit None -lu 1 -dppoolno 30 -size 256g'): [1, "", ""],
-        ('auluref', '-unit None'): [0, "%s" % auluref_result, ""],
-        ('auluref', '-unit None -lu 0'): [0, "%s" % auluref_result, ""],
-        ('auhgmap', '-unit None -add 0 0 1 1 1'): [0, 0, ""],
-        ('auhgwwn', '-unit None -refer'): [0, "%s" % auhgwwn_result, ""],
-        ('aufibre1', '-unit None -refer'): [0, "%s" % aufibre1_result, ""],
-        ('auhgmap', '-unit None -refer'): [0, "%s" % auhgmap_result, ""]}
-
-    auluref_ret_err = "Stripe  RAID     DP    Tier \
-  RAID                           Rotational  Number\n\
-   LU       Capacity        Size    Group    Pool  Mode     Level        Type\
-                   Speed  of Paths  Status\n\
-    0       2097152 blocks   256KB      0       0  Enable     0  Normal"
-
-    hsnm_get_lu_ret_err = {
-        ('auluref', '-unit None -lu 0'): [1, "%s" % auluref_ret_err, ""],
+    test_snapshot0 = {
+        'id': 'test-snapshot0',
+        'name': 'test-snapshot0',
+        'provider_location': '0',
+        'size': 128,
+        'status': 'available',
+        'volume': TEST_VOLUME_TABLE.get("test-volume0"),
+        'volume_id': 'test-volume0',
+        'volume_name': 'test-volume0',
+        'volume_size': 128,
     }
 
-    auluref_vol_type_err = "Stripe  RAID     DP    Tier \
-  RAID                           Rotational  Number\n\
-   LU       Capacity        Size    Group    Pool  Mode     Level        Type\
-                   Speed  of Paths  Status\n\
-    0       2097152 blocks   256KB      0       0  Enable     0  DUMMY"
-
-    hsnm_get_lu_vol_type_err = {
-        ('auluref', '-unit None -lu 0'):
-        [0, "%s" % auluref_vol_type_err, ""],
+    test_snapshot1 = {
+        'id': 'test-snapshot1',
+        'name': 'test-snapshot1',
+        'provider_location': '1',
+        'size': 256,
+        'status': 'available',
+        'volume': TEST_VOLUME_TABLE.get("test-volume1"),
+        'volume_id': 'test-volume1',
+        'volume_name': 'test-volume1',
+        'volume_size': 256,
     }
 
-    auluref_dppool_err = "Stripe  RAID     DP    Tier \
-  RAID                           Rotational  Number\n\
-   LU       Capacity        Size    Group    Pool  Mode     Level        Type\
-                   Speed  of Paths  Status\n\
-    0       2097152 blocks   256KB      0       N/A  Enable     0  Normal"
-
-    hsnm_get_lu_dppool_err = {
-        ('auluref', '-unit None -lu 0'):
-        [0, "%s" % auluref_dppool_err, ""],
+    test_snapshot2 = {
+        'id': 'test-snapshot2',
+        'name': 'test-snapshot2',
+        'provider_location': None,
+        'size': 128,
+        'status': 'available',
+        'volume': TEST_VOLUME_TABLE.get("test-volume2"),
+        'volume_id': 'test-volume2',
+        'volume_name': 'test-volume2',
+        'volume_size': 128,
     }
 
-    auluref_size_err = "Stripe  RAID     DP    Tier \
-  RAID                           Rotational  Number\n\
-   LU       Capacity        Size    Group    Pool  Mode     Level        Type\
-                   Speed  of Paths  Status\n\
-    0       2097151 blocks   256KB      N/A       0  Enable     0  Normal"
-    hsnm_get_lu_size_err = {
-        ('auluref', '-unit None -lu 0'): [0, "%s" % auluref_size_err, ""],
+    test_snapshot3 = {
+        'id': 'test-snapshot3',
+        'name': 'test-snapshot3',
+        'provider_location': '3',
+        'size': 128,
+        'status': 'available',
+        'volume': TEST_VOLUME_TABLE.get("test-volume3"),
+        'volume_id': 'test-volume3',
+        'volume_name': 'test-volume3',
+        'volume_size': 128,
     }
 
-    auluref_num_port_err = "Stripe  RAID     DP    Tier \
-  RAID                           Rotational  Number\n\
-   LU       Capacity        Size    Group    Pool  Mode     Level        Type\
-                   Speed  of Paths  Status\n\
-    0       2097152 blocks   256KB      0       0  Enable     1  Normal"
-
-    hsnm_get_lu_num_port_err = {
-        ('auluref', '-unit None -lu 0'): [0, "%s" % auluref_num_port_err, ""],
+    test_snapshot4 = {
+        'id': 'test-snapshot4',
+        'name': 'test-snapshot4',
+        'provider_location': '4',
+        'size': 128,
+        'status': 'available',
+        'volume': TEST_VOLUME_TABLE.get("test-volume4"),
+        'volume_id': 'test-volume4',
+        'volume_name': 'test-volume4',
+        'volume_size': 128,
     }
 
-# The following information is passed on to tests, when creating a volume
+    test_snapshot5 = {
+        'id': 'test-snapshot5',
+        'name': 'test-snapshot5',
+        'provider_location': '10',
+        'size': 128,
+        'status': 'available',
+        'volume': TEST_VOLUME_TABLE.get("test-volume7"),
+        'volume_id': 'test-volume7',
+        'volume_name': 'test-volume7',
+        'volume_size': 128,
+    }
 
-    _VOLUME = {'size': 128, 'volume_type': None, 'source_volid': '0',
-               'provider_location': '1', 'name': 'test',
-               'id': 'abcdefg', 'snapshot_id': '0', 'status': 'available'}
+    test_snapshot6 = {
+        'id': 'test-snapshot6',
+        'name': 'test-snapshot6',
+        'provider_location': '11',
+        'size': 128,
+        'status': 'available',
+        'volume': TEST_VOLUME_TABLE.get("test-volume7"),
+        'volume_id': 'test-volume7',
+        'volume_name': 'test-volume7',
+        'volume_size': 128,
+    }
 
-    test_volume = {'name': 'test_volume', 'size': 128,
-                   'id': 'test-volume-0',
-                   'provider_location': '1', 'status': 'available'}
+    test_snapshot7 = {
+        'id': 'test-snapshot7',
+        'name': 'test-snapshot7',
+        'provider_location': '12',
+        'size': 128,
+        'status': 'available',
+        'volume': TEST_VOLUME_TABLE.get("test-volume7"),
+        'volume_id': 'test-volume7',
+        'volume_name': 'test-volume7',
+        'volume_size': 128,
+    }
 
-    test_volume_error = {'name': 'test_volume_error', 'size': 256,
-                         'id': 'test-volume-error',
-                         'provider_location': '3', 'status': 'available'}
+    TEST_SNAPSHOT_TABLE = {
+        'test-snapshot0': fake_snapshot.fake_db_snapshot(**test_snapshot0),
+        'test-snapshot1': fake_snapshot.fake_db_snapshot(**test_snapshot1),
+        'test-snapshot2': fake_snapshot.fake_db_snapshot(**test_snapshot2),
+        'test-snapshot3': fake_snapshot.fake_db_snapshot(**test_snapshot3),
+        'test-snapshot4': fake_snapshot.fake_db_snapshot(**test_snapshot4),
+        'test-snapshot5': fake_snapshot.fake_db_snapshot(**test_snapshot5),
+        'test-snapshot6': fake_snapshot.fake_db_snapshot(**test_snapshot6),
+        'test-snapshot7': fake_snapshot.fake_db_snapshot(**test_snapshot7),
+    }
 
-    test_volume_error1 = {'name': 'test_volume_error', 'size': 128,
-                          'id': 'test-volume-error',
-                          'provider_location': None, 'status': 'available'}
+    test_existing_ref = {'source-id': '0'}
+    test_existing_none_ldev_ref = {'source-id': '2'}
+    test_existing_invalid_ldev_ref = {'source-id': 'AAA'}
+    test_existing_value_error_ref = {'source-id': 'XX:XX:XX'}
+    test_existing_no_ldev_ref = {}
 
-    test_volume_error2 = {'name': 'test_volume_error', 'size': 256,
-                          'id': 'test-volume-error',
-                          'provider_location': '1', 'status': 'available'}
-
-    test_volume_error3 = {'name': 'test_volume3', 'size': 128,
-                          'id': 'test-volume3',
-                          'volume_metadata': [{'key': 'type',
-                                               'value': 'V-VOL'}],
-                          'provider_location': '1', 'status': 'available'}
-
-    test_volume_error4 = {'name': 'test_volume4', 'size': 128,
-                          'id': 'test-volume2',
-                          'provider_location': '3', 'status': 'available'}
-
-    test_snapshot = {'volume_name': 'test', 'size': 128,
-                     'volume_size': 128, 'name': 'test-snap',
-                     'volume_id': 0, 'id': 'test-snap-0', 'volume': _VOLUME,
-                     'provider_location': '1', 'status': 'available'}
-
-    test_snapshot_error2 = {'volume_name': 'test', 'size': 128,
-                            'volume_size': 128, 'name': 'test-snap',
-                            'volume_id': 0, 'id': 'test-snap-0',
-                            'volume': test_volume_error,
-                            'provider_location': None, 'status': 'available'}
-
-    UNIT_NAME = 'HUS110_91122819'
-    test_existing_ref = {'ldev': '0', 'unit_name': UNIT_NAME}
-    test_existing_none_ldev_ref = {'ldev': None, 'unit_name': UNIT_NAME}
-    test_existing_invalid_ldev_ref = {'ldev': 'AAA', 'unit_name': UNIT_NAME}
-    test_existing_no_ldev_ref = {'unit_name': UNIT_NAME}
-    test_existing_none_unit_ref = {'ldev': '0', 'unit_name': None}
-    test_existing_invalid_unit_ref = {'ldev': '0', 'unit_name': 'Dummy'}
-    test_existing_no_unit_ref = {'ldev': '0'}
-
-    def __init__(self, *args, **kwargs):
-        super(HBSDSNM2FCDriverTest, self).__init__(*args, **kwargs)
-
-    def setUp(self):
+    def setUp(self, *args):
         super(HBSDSNM2FCDriverTest, self).setUp()
+
+        self.configuration = mock.Mock(conf.Configuration)
+        self.ctxt = context.get_admin_context()
         self._setup_config()
         self._setup_driver()
 
-    def _setup_config(self):
-        self.configuration = mock.Mock(conf.Configuration)
-        self.configuration.hitachi_pool_id = 30
-        self.configuration.hitachi_target_ports = "00"
-        self.configuration.hitachi_debug_level = 0
-        self.configuration.hitachi_serial_number = "None"
-        self.configuration.hitachi_unit_name = "None"
-        self.configuration.hitachi_group_request = False
-        self.configuration.hitachi_zoning_request = False
-        self.configuration.config_group = "None"
-        self.configuration.hitachi_ldev_range = [0, 100]
-        self.configuration.hitachi_default_copy_method = 'SI'
+    def _setup_config(self, *args):
+        self.configuration.config_group = "SNM2"
+
+        self.configuration.volume_backend_name = "SNM2FC"
+        self.configuration.volume_driver = (
+            "cinder.volume.drivers.hitachi.hbsd_fc.HBSDFCDriver")
+        self.configuration.reserved_percentage = "0"
+        self.configuration.use_multipath_for_image_xfer = False
+        self.configuration.enforce_multipath_for_image_xfer = False
+        self.configuration.num_volume_device_scan_tries = 3
+        self.configuration.volume_dd_blocksize = "1000"
+
+        self.configuration.hitachi_storage_cli = "SNM2"
+        self.configuration.hitachi_storage_id = CONFIG_MAP['storage_id']
+        self.configuration.hitachi_pool = "1"
+        self.configuration.hitachi_thin_pool = None
+        self.configuration.hitachi_ldev_range = "0-10"
+        self.configuration.hitachi_default_copy_method = 'FULL'
+        self.configuration.hitachi_copy_speed = 15
         self.configuration.hitachi_copy_check_interval = 1
-        self.configuration.hitachi_copy_speed = 3
+        self.configuration.hitachi_async_copy_check_interval = 1
+        self.configuration.hitachi_target_ports = "1A"
+        self.configuration.hitachi_compute_target_ports = "1A"
+        self.configuration.hitachi_group_request = True
+        self.configuration.hitachi_driver_cert_mode = False
 
-    def _setup_driver(self):
+        self.configuration.hitachi_zoning_request = False
+
+        self.configuration.safe_get = self._fake_safe_get
+
+    def _fake_safe_get(self, value):
+        try:
+            val = getattr(self.configuration, value)
+        except AttributeError:
+            val = None
+        return val
+
+    @mock.patch.object(
+        utils, 'brick_get_connector_properties',
+        side_effect=_brick_get_connector_properties)
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def _setup_driver(self, *args):
         self.driver = hbsd_fc.HBSDFCDriver(
-            configuration=self.configuration)
-        context = None
-        db = None
-        self.driver.common = hbsd_common.HBSDCommon(
-            self.configuration, self.driver, context, db)
-        self.driver.common.command = hbsd_snm2.HBSDSNM2(self.configuration)
-        self.driver.common.pair_flock = \
-            self.driver.common.command.set_pair_flock()
-        self.driver.common.horcmgr_flock = \
-            self.driver.common.command.set_horcmgr_flock()
-        self.driver.do_setup_status.set()
+            configuration=self.configuration, db=db)
+        self.driver.do_setup(None)
+        self.driver.check_for_setup_error()
+        self.driver.create_export(None, None, None)
+        self.driver.ensure_export(None, None)
+        self.driver.remove_export(None, None)
 
-# API test cases
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_common.HBSDCommon, 'get_volume_metadata')
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    def test_create_volume(self, arg1, arg2, arg3):
-        """test create_volume."""
-        ret = self.driver.create_volume(self._VOLUME)
-        vol = self._VOLUME.copy()
-        vol['provider_location'] = ret['provider_location']
-        self.assertEqual('1', vol['provider_location'])
+    # API test cases
+    @mock.patch.object(
+        utils, 'brick_get_connector_properties',
+        side_effect=_brick_get_connector_properties)
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_do_setup(self, *args):
+        drv = hbsd_fc.HBSDFCDriver(
+            configuration=self.configuration, db=db)
+        self._setup_config()
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_common.HBSDCommon, 'get_volume_metadata')
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    def test_create_volume_error(self, arg1, arg2, arg3):
-        """test create_volume."""
-        self.assertRaises(exception.HBSDCmdError,
-                          self.driver.create_volume,
-                          self.test_volume_error)
+        drv.do_setup(None)
+        self.assertEqual(
+            {'1A': '50060E801053C2E8'},
+            drv.common.storage_info['wwns'])
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    def test_get_volume_stats(self, arg1, arg2):
-        """test get_volume_stats."""
+    @mock.patch.object(
+        utils, 'brick_get_connector_properties',
+        side_effect=_brick_get_connector_properties)
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_do_setup_create_hostgrp(self, *args):
+        drv = hbsd_fc.HBSDFCDriver(
+            configuration=self.configuration, db=db)
+        self._setup_config()
+        self.configuration.hitachi_target_ports = "0B"
+        self.configuration.hitachi_compute_target_ports = "0B"
+
+        drv.do_setup(None)
+        self.assertEqual(
+            {'0B': '50060E801053C2E1'},
+            drv.common.storage_info['wwns'])
+
+    @mock.patch.object(hbsd_snm2, '_EXEC_TIMEOUT', 1)
+    @mock.patch.object(
+        utils, 'brick_get_connector_properties',
+        side_effect=_brick_get_connector_properties)
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_do_setup_create_hostgrp_error(self, *args):
+        drv = hbsd_fc.HBSDFCDriver(
+            configuration=self.configuration, db=db)
+        self._setup_config()
+        self.configuration.hitachi_target_ports = "1B"
+        self.configuration.hitachi_compute_target_ports = "1B"
+
+        self.assertRaises(exception.HBSDError, drv.do_setup, None)
+
+    @mock.patch.object(
+        utils, 'brick_get_connector_properties',
+        side_effect=_brick_get_connector_properties)
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_do_setup_ldev_range_is_none(self, *args):
+        drv = hbsd_fc.HBSDFCDriver(
+            configuration=self.configuration, db=db)
+        self._setup_config()
+        self.configuration.hitachi_ldev_range = None
+
+        drv.do_setup(None)
+        self.assertEqual(
+            [0, 65535],
+            drv.common.storage_info['ldev_range'])
+
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_create_volume(self, *args):
+        ret = self.driver.create_volume(fake_volume.fake_volume_obj(self.ctxt))
+        self.assertEqual('1', ret['provider_location'])
+
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_create_volume_free_ldev_not_found(self, *args):
+        self.driver.common.storage_info['ldev_range'] = [0, 0]
+        self.assertRaises(
+            exception.HBSDError, self.driver.create_volume,
+            TEST_VOLUME_OBJ.get("test-volume0"))
+
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_extend_volume(self, *args):
+        self.driver.extend_volume(
+            TEST_VOLUME_OBJ.get("test-volume0"), 256)
+
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_extend_volume_ldev_is_none(self, *args):
+        self.assertRaises(
+            exception.HBSDError, self.driver.extend_volume,
+            TEST_VOLUME_OBJ.get("test-volume2"), 256)
+
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_extend_volume_ldev_is_vvol(self, *args):
+        self.assertRaises(
+            exception.HBSDError, self.driver.extend_volume,
+            TEST_VOLUME_OBJ.get("test-volume5"), 256)
+
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_get_volume_stats(self, *args):
         stats = self.driver.get_volume_stats(True)
         self.assertEqual('Hitachi', stats['vendor_name'])
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    def test_get_volume_stats_error(self, arg1, arg2):
-        """test get_volume_stats."""
-        self.configuration.hitachi_pool_id = 29
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_get_volume_stats_no_refresh(self, *args):
+        stats = self.driver.get_volume_stats()
+        self.assertEqual({}, stats)
+
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_get_volume_stats_failed_to_get_dp_pool(self, *args):
+        self.driver.common.storage_info['pool_id'] = 2
         stats = self.driver.get_volume_stats(True)
         self.assertEqual({}, stats)
-        self.configuration.hitachi_pool_id = 30
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    def test_extend_volume(self, arg1, arg2):
-        """test extend_volume."""
-        self.driver.extend_volume(self._VOLUME, 256)
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_delete_volume(self, *args):
+        self.driver.delete_volume(TEST_VOLUME_OBJ.get("test-volume0"))
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    def test_extend_volume_error(self, arg1, arg2):
-        """test extend_volume."""
-        self.assertRaises(exception.HBSDError, self.driver.extend_volume,
-                          self.test_volume_error3, 256)
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_delete_volume_ldev_is_none(self, *args):
+        self.driver.delete_volume(TEST_VOLUME_OBJ.get("test-volume2"))
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    def test_delete_volume(self, arg1, arg2):
-        """test delete_volume."""
-        self.driver.delete_volume(self._VOLUME)
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_delete_volume_ldev_not_found(self, *args):
+        self.driver.delete_volume(TEST_VOLUME_OBJ.get("test-volume3"))
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    def test_delete_volume_error(self, arg1, arg2):
-        """test delete_volume."""
-        self.assertRaises(exception.HBSDCmdError,
-                          self.driver.delete_volume,
-                          self.test_volume_error4)
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_delete_volume_volume_is_busy(self, *args):
+        self.assertRaises(
+            exception.HBSDVolumeIsBusy, self.driver.delete_volume,
+            TEST_VOLUME_OBJ.get("test-volume4"))
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_common.HBSDCommon, 'get_snapshot_metadata',
-                       return_value={'dummy_snapshot_meta': 'snapshot_meta'})
-    @mock.patch.object(hbsd_common.HBSDCommon, 'get_volume_metadata',
-                       return_value={'dummy_volume_meta': 'meta'})
-    @mock.patch.object(hbsd_common.HBSDCommon, 'get_volume',
-                       return_value=_VOLUME)
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    def test_create_snapshot(self, arg1, arg2, arg3, arg4, arg5):
-        """test create_snapshot."""
-        ret = self.driver.create_volume(self._VOLUME)
-        ret = self.driver.create_snapshot(self.test_snapshot)
-        self.assertEqual('1', ret['provider_location'])
+    @mock.patch.object(
+        db, 'snapshot_metadata_update', side_effect=_snapshot_metadata_update)
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    @mock.patch.object(
+        hbsd_snm2.HBSDSNM2, '_run_auluref', _fake_run_auluref)
+    @mock.patch.object(db, 'volume_get', side_effect=_volume_get)
+    def test_create_snapshot_full(self, *args):
+        ret = self.driver.create_snapshot(
+            self.TEST_SNAPSHOT_TABLE.get("test-snapshot7"))
+        self.assertEqual('8', ret['provider_location'])
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_common.HBSDCommon, 'get_snapshot_metadata',
-                       return_value={'dummy_snapshot_meta': 'snapshot_meta'})
-    @mock.patch.object(hbsd_common.HBSDCommon, 'get_volume_metadata',
-                       return_value={'dummy_volume_meta': 'meta'})
-    @mock.patch.object(hbsd_common.HBSDCommon, 'get_volume',
-                       return_value=test_volume_error)
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    def test_create_snapshot_error(self, arg1, arg2, arg3, arg4, arg5):
-        """test create_snapshot."""
-        self.assertRaises(exception.HBSDCmdError,
-                          self.driver.create_snapshot,
-                          self.test_snapshot_error2)
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    @mock.patch.object(
+        hbsd_snm2.HBSDSNM2, '_run_auluref', _fake_run_auluref)
+    @mock.patch.object(
+        db, 'snapshot_metadata_update', side_effect=_snapshot_metadata_update)
+    @mock.patch.object(db, 'volume_get', side_effect=_volume_get)
+    def test_create_snapshot_thin(self, *args):
+        self.configuration.hitachi_thin_pool = 1
+        self.configuration.hitachi_default_copy_method = "THIN"
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    def test_delete_snapshot(self, arg1, arg2):
-        """test delete_snapshot."""
-        self.driver.delete_snapshot(self.test_snapshot)
-        return
+        ret = self.driver.create_snapshot(
+            self.TEST_SNAPSHOT_TABLE.get("test-snapshot7"))
+        self.assertEqual('8', ret['provider_location'])
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    def test_delete_snapshot_error(self, arg1, arg2):
-        """test delete_snapshot."""
-        self.driver.delete_snapshot(self.test_snapshot_error2)
-        return
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    @mock.patch.object(db, 'volume_get', side_effect=_volume_get)
+    def test_create_snapshot_ldev_is_none(self, *args):
+        self.assertRaises(
+            exception.HBSDError, self.driver.create_snapshot,
+            self.TEST_SNAPSHOT_TABLE.get("test-snapshot2"))
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_common.HBSDCommon, 'get_volume_metadata',
-                       return_value={'dummy_volume_meta': 'meta'})
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    def test_create_volume_from_snapshot(self, arg1, arg2, arg3):
-        """test create_volume_from_snapshot."""
-        vol = self.driver.create_volume_from_snapshot(self._VOLUME,
-                                                      self.test_snapshot)
-        self.assertIsNotNone(vol)
-        return
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    @mock.patch.object(db, 'volume_get', side_effect=_volume_get)
+    def test_create_snapshot_ldev_not_found(self, *args):
+        self.assertRaises(
+            exception.HBSDError, self.driver.create_snapshot,
+            self.TEST_SNAPSHOT_TABLE.get("test-snapshot3"))
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_common.HBSDCommon, 'get_volume_metadata',
-                       return_value={'dummy_volume_meta': 'meta'})
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    def test_create_volume_from_snapshot_error(self, arg1, arg2, arg3):
-        """test create_volume_from_snapshot."""
-        self.assertRaises(exception.HBSDError,
-                          self.driver.create_volume_from_snapshot,
-                          self.test_volume_error2, self.test_snapshot)
-        return
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_delete_snapshot_full(self, *args):
+        self.driver.delete_snapshot(
+            self.TEST_SNAPSHOT_TABLE.get("test-snapshot5"))
 
-    @mock.patch.object(hbsd_common.HBSDCommon, 'get_volume_metadata',
-                       return_value={'dummy_volume_meta': 'meta'})
-    @mock.patch.object(hbsd_common.HBSDCommon, 'get_volume',
-                       return_value=_VOLUME)
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    def test_create_cloned_volume(self, arg1, arg2, arg3, arg4):
-        """test create_cloned_volume."""
-        vol = self.driver.create_cloned_volume(self._VOLUME,
-                                               self.test_volume)
-        self.assertIsNotNone(vol)
-        return
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_delete_snapshot_thin(self, *args):
+        self.driver.delete_snapshot(
+            self.TEST_SNAPSHOT_TABLE.get("test-snapshot6"))
 
-    @mock.patch.object(hbsd_common.HBSDCommon, 'get_volume_metadata',
-                       return_value={'dummy_volume_meta': 'meta'})
-    @mock.patch.object(hbsd_common.HBSDCommon, 'get_volume',
-                       return_value=test_volume_error1)
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    def test_create_cloned_volume_error(self, arg1, arg2, arg3, arg4):
-        """test create_cloned_volume."""
-        self.assertRaises(exception.HBSDError,
-                          self.driver.create_cloned_volume,
-                          self._VOLUME, self.test_volume_error1)
-        return
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_delete_snapshot_ldev_is_none(self, *args):
+        self.driver.delete_snapshot(
+            self.TEST_SNAPSHOT_TABLE.get("test-snapshot2"))
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    def test_initialize_connection(self, arg1, arg2):
-        """test initialize connection."""
-        connector = {'wwpns': '0x100000', 'ip': '0xc0a80100'}
-        rc = self.driver.initialize_connection(self._VOLUME, connector)
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_delete_snapshot_ldev_not_found(self, *args):
+        self.driver.delete_snapshot(
+            self.TEST_SNAPSHOT_TABLE.get("test-snapshot3"))
+
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_delete_snapshot_snapshot_is_busy(self, *args):
+        self.assertRaises(
+            exception.HBSDSnapshotIsBusy, self.driver.delete_snapshot,
+            self.TEST_SNAPSHOT_TABLE.get("test-snapshot4"))
+
+    @mock.patch.object(volume_utils, 'copy_volume', side_effect=_copy_volume)
+    @mock.patch.object(
+        utils, 'brick_get_connector_properties',
+        side_effect=_brick_get_connector_properties)
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    @mock.patch.object(
+        brick_connector.FibreChannelConnector,
+        'connect_volume', _connect_volume)
+    @mock.patch.object(
+        brick_connector.FibreChannelConnector,
+        'disconnect_volume', _disconnect_volume)
+    def test_create_cloned_volume_with_dd(self, *args):
+        test_vol_obj = TEST_VOLUME_OBJ.get("test-volume0")
+        test_vol_obj.metadata = COPY_METHOD_THIN
+
+        vol = self.driver.create_cloned_volume(
+            test_vol_obj, TEST_VOLUME_OBJ.get("test-volume5"))
+        self.assertEqual('1', vol['provider_location'])
+
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_create_cloned_volume_ldev_is_none(self, *args):
+        self.assertRaises(
+            exception.HBSDError, self.driver.create_cloned_volume,
+            TEST_VOLUME_OBJ.get("test-volume0"),
+            TEST_VOLUME_OBJ.get("test-volume2"))
+
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_create_cloned_volume_invalid_size(self, *args):
+        self.assertRaises(
+            exception.HBSDError, self.driver.create_cloned_volume,
+            TEST_VOLUME_OBJ.get("test-volume0"),
+            TEST_VOLUME_OBJ.get("test-volume1"))
+
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_create_volume_from_snapshot(self, *args):
+        self.configuration.volume_dd_blocksize = 1024
+
+        vol = self.driver.create_volume_from_snapshot(
+            TEST_VOLUME_OBJ.get("test-volume0"),
+            self.TEST_SNAPSHOT_TABLE.get("test-snapshot0"))
+
+        self.assertEqual('1', vol['provider_location'])
+
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_create_volume_from_snapshot_invalid_size(self, *args):
+        self.assertRaises(
+            exception.HBSDError, self.driver.create_volume_from_snapshot,
+            TEST_VOLUME_OBJ.get("test-volume0"),
+            self.TEST_SNAPSHOT_TABLE.get("test-snapshot1"))
+
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_create_volume_from_snapshot_ldev_is_none(self, *args):
+        self.assertRaises(
+            exception.HBSDError, self.driver.create_volume_from_snapshot,
+            TEST_VOLUME_OBJ.get("test-volume0"),
+            self.TEST_SNAPSHOT_TABLE.get("test-snapshot2"))
+
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    @mock.patch.object(
+        db, 'volume_admin_metadata_get',
+        side_effect=_volume_admin_metadata_get)
+    def test_initialize_connection(self, *args):
+        self.configuration.hitachi_target_ports = ["0A", "1A"]
+        rc = self.driver.initialize_connection(
+            TEST_VOLUME_OBJ.get("test-volume0"), DEFAULT_CONNECTOR)
         self.assertEqual('fibre_channel', rc['driver_volume_type'])
-        self.assertEqual(['50060E801053C2E0'], rc['data']['target_wwn'])
-        self.assertEqual(1, rc['data']['target_lun'])
-        return
+        self.assertEqual(['50060E801053C2E8'], rc['data']['target_wwn'])
+        self.assertEqual(0, rc['data']['target_lun'])
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    def test_initialize_connection_error(self, arg1, arg2):
-        """test initialize connection."""
-        connector = {'wwpns': 'x', 'ip': '0xc0a80100'}
-        self.assertRaises(exception.HBSDError,
-                          self.driver.initialize_connection,
-                          self._VOLUME, connector)
-        return
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_initialize_connection_ldev_is_none(self, *args):
+        self.assertRaises(
+            exception.HBSDError, self.driver.initialize_connection,
+            TEST_VOLUME_OBJ.get("test-volume2"), DEFAULT_CONNECTOR)
 
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    def test_terminate_connection(self, arg1):
-        """test terminate connection."""
-        connector = {'wwpns': '0x100000', 'ip': '0xc0a80100'}
-        rc = self.driver.terminate_connection(self._VOLUME, connector)
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    @mock.patch.object(
+        db, 'volume_admin_metadata_get',
+        side_effect=_volume_admin_metadata_get)
+    def test_initialize_connection_already_attached(self, *args):
+        rc = self.driver.initialize_connection(
+            TEST_VOLUME_OBJ.get("test-volume6"), DEFAULT_CONNECTOR)
         self.assertEqual('fibre_channel', rc['driver_volume_type'])
-        self.assertEqual(['50060E801053C2E0'], rc['data']['target_wwn'])
-        return
+        self.assertEqual(['50060E801053C2E8'], rc['data']['target_wwn'])
 
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    def test_terminate_connection_error(self, arg1):
-        """test terminate connection."""
-        connector = {'ip': '0xc0a80100'}
-        self.assertRaises(exception.HBSDError,
-                          self.driver.terminate_connection,
-                          self._VOLUME, connector)
-        return
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_terminate_connection(self, *args):
+        self.driver.terminate_connection(
+            TEST_VOLUME_OBJ.get("test-volume6"), DEFAULT_CONNECTOR)
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    def test_manage_existing(self, arg1, arg2):
-        rc = self.driver.manage_existing(self._VOLUME, self.test_existing_ref)
-        self.assertEqual(0, rc['provider_location'])
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_terminate_connection_ldev_is_none(self, *args):
+        self.driver.terminate_connection(
+            TEST_VOLUME_OBJ.get("test-volume2"), DEFAULT_CONNECTOR)
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    @mock.patch.object(hbsd_common.HBSDCommon, '_update_volume_metadata')
-    def test_manage_existing_get_size(self, arg1, arg2, arg3):
-        self.configuration.hitachi_unit_name = self.UNIT_NAME
-        size = self.driver.manage_existing_get_size(self._VOLUME,
-                                                    self.test_existing_ref)
-        self.assertEqual(1, size)
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_terminate_connection_ldev_not_found(self, *args):
+        self.configuration.hitachi_target_ports = ["0A", "1A"]
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    @mock.patch.object(hbsd_common.HBSDCommon, '_update_volume_metadata')
-    def test_manage_existing_get_size_none_ldev(self, arg1, arg2, arg3):
-        self.configuration.hitachi_unit_name = self.UNIT_NAME
-        self.assertRaises(exception.ManageExistingInvalidReference,
-                          self.driver.manage_existing_get_size, self._VOLUME,
-                          self.test_existing_none_ldev_ref)
+        self.driver.terminate_connection(
+            TEST_VOLUME_OBJ.get("test-volume3"), DEFAULT_CONNECTOR)
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    @mock.patch.object(hbsd_common.HBSDCommon, '_update_volume_metadata')
-    def test_manage_existing_get_size_invalid_ldev_ref(self, arg1, arg2, arg3):
-        self.configuration.hitachi_unit_name = self.UNIT_NAME
-        self.assertRaises(exception.ManageExistingInvalidReference,
-                          self.driver.manage_existing_get_size, self._VOLUME,
-                          self.test_existing_invalid_ldev_ref)
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_terminate_connection_initiator_iqn_not_found(self, *args):
+        connector = dict(DEFAULT_CONNECTOR)
+        del connector['wwpns']
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    @mock.patch.object(hbsd_common.HBSDCommon, '_update_volume_metadata')
-    def test_manage_existing_get_size_no_ldev_ref(self, arg1, arg2, arg3):
-        self.configuration.hitachi_unit_name = self.UNIT_NAME
-        self.assertRaises(exception.ManageExistingInvalidReference,
-                          self.driver.manage_existing_get_size, self._VOLUME,
-                          self.test_existing_no_ldev_ref)
+        self.assertRaises(
+            exception.HBSDError, self.driver.terminate_connection,
+            TEST_VOLUME_OBJ.get("test-volume0"), connector)
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    @mock.patch.object(hbsd_common.HBSDCommon, '_update_volume_metadata')
-    def test_manage_existing_get_size_none_unit_ref(self, arg1, arg2, arg3):
-        self.configuration.hitachi_unit_name = self.UNIT_NAME
-        self.assertRaises(exception.ManageExistingInvalidReference,
-                          self.driver.manage_existing_get_size, self._VOLUME,
-                          self.test_existing_none_unit_ref)
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_copy_volume_to_image(self, *args):
+        image_service = 'fake_image_service'
+        image_meta = 'fake_image_meta'
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    @mock.patch.object(hbsd_common.HBSDCommon, '_update_volume_metadata')
-    def test_manage_existing_get_size_invalid_unit_ref(self, arg1, arg2, arg3):
-        self.configuration.hitachi_unit_name = self.UNIT_NAME
-        self.assertRaises(exception.ManageExistingInvalidReference,
-                          self.driver.manage_existing_get_size, self._VOLUME,
-                          self.test_existing_invalid_unit_ref)
+        with mock.patch.object(
+                driver.VolumeDriver,
+                'copy_volume_to_image') as mock_copy_volume_to_image:
+            self.driver.copy_volume_to_image(
+                self.ctxt, TEST_VOLUME_OBJ.get("test-volume0"),
+                image_service, image_meta)
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    @mock.patch.object(hbsd_common.HBSDCommon, '_update_volume_metadata')
-    def test_manage_existing_get_size_no_unit_ref(self, arg1, arg2, arg3):
-        self.configuration.hitachi_unit_name = self.UNIT_NAME
-        self.assertRaises(exception.ManageExistingInvalidReference,
-                          self.driver.manage_existing_get_size, self._VOLUME,
-                          self.test_existing_no_unit_ref)
+        mock_copy_volume_to_image.assert_called_with(
+            self.ctxt, TEST_VOLUME_OBJ.get("test-volume0"),
+            image_service, image_meta)
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm',
-                       side_effect=_exec_hsnm_get_lu_ret_err)
-    @mock.patch.object(hbsd_common.HBSDCommon, '_update_volume_metadata')
-    def test_manage_existing_get_size_ret_err(self, arg1, arg2, arg3):
-        self.configuration.hitachi_unit_name = self.UNIT_NAME
-        self.assertRaises(exception.ManageExistingInvalidReference,
-                          self.driver.manage_existing_get_size, self._VOLUME,
-                          self.test_existing_ref)
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_manage_existing(self, *args):
+        rc = self.driver.manage_existing(
+            TEST_VOLUME_OBJ.get("test-volume0"),
+            self.test_existing_ref)
+        self.assertEqual('0', rc['provider_location'])
+        self.assertEqual(0, rc['metadata']['ldev'])
+        self.assertEqual(hbsd_utils.NORMAL_LDEV_TYPE, rc['metadata']['type'])
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm',
-                       side_effect=_exec_hsnm_get_lu_vol_type_err)
-    @mock.patch.object(hbsd_common.HBSDCommon, '_update_volume_metadata')
-    def test_manage_existing_get_lu_vol_type_err(self, arg1, arg2, arg3):
-        self.configuration.hitachi_unit_name = self.UNIT_NAME
-        self.assertRaises(exception.ManageExistingInvalidReference,
-                          self.driver.manage_existing_get_size, self._VOLUME,
-                          self.test_existing_ref)
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_manage_existing_get_size_none_ldev_ref(self, *args):
+        self.assertRaises(
+            exception.ManageExistingInvalidReference,
+            self.driver.manage_existing_get_size,
+            TEST_VOLUME_OBJ.get("test-volume0"),
+            self.test_existing_none_ldev_ref)
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm',
-                       side_effect=_exec_hsnm_get_lu_dppool_err)
-    @mock.patch.object(hbsd_common.HBSDCommon, '_update_volume_metadata')
-    def test_manage_existing_get_lu_dppool_err(self, arg1, arg2, arg3):
-        self.configuration.hitachi_unit_name = self.UNIT_NAME
-        self.assertRaises(exception.ManageExistingInvalidReference,
-                          self.driver.manage_existing_get_size, self._VOLUME,
-                          self.test_existing_ref)
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_manage_existing_get_size_invalid_ldev_ref(self, *args):
+        self.assertRaises(
+            exception.ManageExistingInvalidReference,
+            self.driver.manage_existing_get_size,
+            TEST_VOLUME_OBJ.get("test-volume0"),
+            self.test_existing_invalid_ldev_ref)
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm',
-                       side_effect=_exec_hsnm_get_lu_size_err)
-    @mock.patch.object(hbsd_common.HBSDCommon, '_update_volume_metadata')
-    def test_manage_existing_get_lu_size_err(self, arg1, arg2, arg3):
-        self.configuration.hitachi_unit_name = self.UNIT_NAME
-        self.assertRaises(exception.ManageExistingInvalidReference,
-                          self.driver.manage_existing_get_size, self._VOLUME,
-                          self.test_existing_ref)
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_manage_existing_get_size_value_error_ref(self, *args):
+        self.assertRaises(
+            exception.ManageExistingInvalidReference,
+            self.driver.manage_existing_get_size,
+            TEST_VOLUME_OBJ.get("test-volume0"),
+            self.test_existing_value_error_ref)
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm',
-                       side_effect=_exec_hsnm_get_lu_num_port_err)
-    @mock.patch.object(hbsd_common.HBSDCommon, '_update_volume_metadata')
-    def test_manage_existing_get_lu_num_port_err(self, arg1, arg2, arg3):
-        self.configuration.hitachi_unit_name = self.UNIT_NAME
-        self.assertRaises(exception.ManageExistingInvalidReference,
-                          self.driver.manage_existing_get_size, self._VOLUME,
-                          self.test_existing_ref)
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_manage_existing_get_size_no_ldev_ref(self, *args):
+        self.assertRaises(
+            exception.ManageExistingInvalidReference,
+            self.driver.manage_existing_get_size,
+            TEST_VOLUME_OBJ.get("test-volume0"),
+            self.test_existing_no_ldev_ref)
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    def test_unmanage(self, arg1, arg2):
-        self.driver.unmanage(self._VOLUME)
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_unmanage(self, *args):
+        self.driver.unmanage(TEST_VOLUME_OBJ.get("test-volume0"))
 
-    @mock.patch.object(hbsd_basiclib, 'get_process_lock')
-    @mock.patch.object(hbsd_snm2.HBSDSNM2, 'exec_hsnm', side_effect=_exec_hsnm)
-    def test_unmanage_busy(self, arg1, arg2):
-        self.assertRaises(exception.HBSDVolumeIsBusy,
-                          self.driver.unmanage, self.test_volume_error3)
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_unmanage_ldev_is_none(self, *args):
+        self.driver.unmanage(TEST_VOLUME_OBJ.get("test-volume2"))
+
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_unmanage_volume_is_busy(self, *args):
+        self.assertRaises(
+            exception.HBSDVolumeIsBusy,
+            self.driver.unmanage, TEST_VOLUME_OBJ.get("test-volume4"))
+
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    @mock.patch.object(
+        db, 'volume_metadata_update', side_effect=_volume_metadata_update)
+    def test_copy_volume_data(self, *args):
+        remote = 'fake_remote'
+
+        with mock.patch.object(
+                driver.VolumeDriver, 'copy_volume_data') as mock_copy_volume:
+            self.driver.copy_volume_data(
+                self.ctxt, TEST_VOLUME_OBJ.get("test-volume0"),
+                TEST_VOLUME_OBJ.get("test-volume0"), remote)
+
+        mock_copy_volume.assert_called_with(
+            self.ctxt, TEST_VOLUME_OBJ.get("test-volume0"),
+            TEST_VOLUME_OBJ.get("test-volume0"), remote)
+
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_copy_image_to_volume(self, *args):
+        image_service = 'fake_image_service'
+        image_id = 'fake_image_id'
+        self.configuration.hitachi_horcm_numbers = (400, 401)
+
+        with mock.patch.object(
+                driver.VolumeDriver,
+                'copy_image_to_volume') as mock_copy_image:
+            self.driver.copy_image_to_volume(
+                self.ctxt, TEST_VOLUME_OBJ.get("test-volume0"),
+                image_service, image_id)
+
+        mock_copy_image.assert_called_with(
+            self.ctxt, TEST_VOLUME_OBJ.get("test-volume0"),
+            image_service, image_id)
+
+    @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
+    def test_restore_backup(self, *args):
+        backup = 'fake_backup'
+        backup_service = 'fake_backup_service'
+
+        with mock.patch.object(
+                driver.VolumeDriver,
+                'restore_backup') as mock_restore_backup:
+            self.driver.restore_backup(
+                self.ctxt, backup, TEST_VOLUME_OBJ.get("test-volume0"),
+                backup_service)
+
+        mock_restore_backup.assert_called_with(
+            self.ctxt, backup, TEST_VOLUME_OBJ.get("test-volume0"),
+            backup_service)

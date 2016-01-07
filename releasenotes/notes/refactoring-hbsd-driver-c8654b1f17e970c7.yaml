@@ -1,0 +1,5 @@
+---
+prelude: >
+    Refactor Hitachi Block Storage Driver.
+upgrade:
+  - Hitachi Block Storage Drivers is refactored for easy maintenance.

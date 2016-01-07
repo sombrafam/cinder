@@ -1,4 +1,4 @@
-# Copyright (C) 2014, 2015, Hitachi, Ltd.
+# Copyright (C) 2015, Hitachi, Ltd.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -30,8 +30,8 @@ from cinder.tests.unit import fake_volume
 from cinder import utils
 from cinder.volume import configuration as conf
 from cinder.volume import driver
-from cinder.volume.drivers.hitachi import hbsd_fc
 from cinder.volume.drivers.hitachi import hbsd_horcm
+from cinder.volume.drivers.hitachi import hbsd_iscsi
 from cinder.volume.drivers.hitachi import hbsd_utils
 from cinder.volume import utils as volume_utils
 
@@ -49,15 +49,11 @@ CONFIG_MAP = {
     'my_ip': '127.0.0.1',
 }
 INST_NUMS = (200, 201)
+ERR_INST_NUMS = (202, 203)
 CG_MAP = {'cg%s' % x: hbsd_horcm._COPY_GROUP % (
     CONFIG_MAP['my_ip'], CONFIG_MAP['serial'], INST_NUMS[1], x)
     for x in range(3)
 }
-
-DEVICE_MAP = {
-    'fablic_name': {
-        'initiator_port_wwn_list': ['123456789abcdee', '123456789abcdef'],
-        'target_port_wwn_list': ['111111112345678']}}
 
 COPY_METHOD_THIN = {'key': 'copy_method', 'value': 'THIN'}
 
@@ -83,14 +79,14 @@ GET_DEVICE_GRP_MU1S_RESULT = """
 %(cg1)sS HBSD-ldev-0-2 2 None
 """ % CG_MAP
 
-# cmd: raidcom get hba_wwn -port CL1-A HBSD-127.0.0.1
-GET_HBA_WWN_CL1A_HOSTGRP_RESULT = """
-CL1-A 0 HBSD-%(my_ip)s 0123456789abcdef %(serial)s NICK_NAME
+# cmd: raidcom get hba_iscsi -port CL1-A HBSD-127.0.0.1
+GET_HBA_ISCSI_CL1A_HOSTGRP_RESULT = """
+CL1-A 0 HBSD-%(my_ip)s iqn-initiator %(serial)s NICK_NAME
 """ % CONFIG_MAP
 
-# cmd: raidcom get hba_wwn -port CL1-A-0
-GET_HBA_WWN_CL1A0_RESULT = """
-CL1-A 0 HBSD-%(my_ip)s 0123456789abcdef %(serial)s NICK_NAME
+# cmd: raidcom get hba_iscsi -port CL1-A-0
+GET_HBA_ISCSI_CL1A0_RESULT = """
+CL1-A 0 HBSD-%(my_ip)s iqn-initiator %(serial)s NICK_NAME
 """ % CONFIG_MAP
 
 # cmd: raidcom get dp_pool
@@ -109,22 +105,22 @@ GET_POOL_KEYOPT_RESULT = """
 
 # cmd: raidcom get hba_wwn -port CL1-A-0
 GET_HBA_WWN_CL1A0_RESULT = """
-CL1-A 0 HBSD-%(my_ip)s 0123456789abcdef %(serial)s -
+CL1-A 0 HBSD-%(my_ip)s iqn-initiator %(serial)s -
 """ % CONFIG_MAP
 
 # cmd: raidcom get hba_wwn -port CL1-B-0
 GET_HBA_WWN_CL1B0_RESULT = """
-CL1-B 0 HBSD-%(my_ip)s 0123456789abcdef %(serial)s -
+CL1-B 0 HBSD-%(my_ip)s iqn-initiator %(serial)s -
 """ % CONFIG_MAP
 
 # cmd: raidcom get host_grp -port CL1-A
 GET_HOST_GRP_CL1A_RESULT = """
-CL1-A 0 HBSD-%(my_ip)s 0123456789abcdef B S %(serial)s L 8
+CL1-A 0 HBSD-%(my_ip)s iqn-initiator.target B S %(serial)s L 8
 """ % CONFIG_MAP
 
 # cmd: raidcom get host_grp -port CL1-A -key opt
 GET_HOST_GRP_CL1A_KEY_RESULT = """
-CL1-A 0 HBSD-%(my_ip)s 0123456789abcdef B S %(serial)s L 8
+CL1-A 0 HBSD-%(my_ip)s iqn-initiator.target B S %(serial)s L 8
 CL1-A 1 - - - - %(serial)s -
 """ % CONFIG_MAP
 
@@ -140,12 +136,12 @@ CL3-A 0 - - - - %(serial)s -
 
 # cmd: raidcom get host_grp -port CL1-B
 GET_HOST_GRP_CL1B_RESULT = """
-CL1-B 0 HBSD-%(my_ip)s 0123456789abcdef B S %(serial)s L 8
+CL1-B 0 HBSD-%(my_ip)s iqn-initiator.target B S %(serial)s L 8
 """ % CONFIG_MAP
 
 # cmd: raidcom get host_grp -port CL1-B -key opt
 GET_HOST_GRP_CL1B_KEY_RESULT = """
-CL1-B 0 HBSD-%(my_ip)s 0123456789abcdef B S %(serial)s L 8
+CL1-B 0 HBSD-%(my_ip)s iqn-initiator.target B S %(serial)s L 8
 CL1-B 1 - - - - %(serial)s -
 """ % CONFIG_MAP
 
@@ -312,11 +308,11 @@ CL1-B 0 L 254 1 5 - None
 
 # cmd: raidcom get port
 GET_PORT_RESULT = """
-CL1-A FIBRE TAR AUT 01 Y PtoP Y 0 %(serial)s 0123456789abcdef
-CL1-B FIBRE TAR AUT 01 Y PtoP Y 0 %(serial)s 0123456789abcdef
-CL3-A FIBRE TAR AUT 01 Y PtoP Y 0 %(serial)s 0123456789abcdef
-CL3-B FIBRE TAR AUT 01 Y PtoP Y 0 %(serial)s 0123456789abcdef
-""" % CONFIG_MAP
+CL1-A ISCSI TAR AUT 01 Y PtoP Y 0 None - -
+CL1-B ISCSI TAR AUT 01 Y PtoP Y 0 None - -
+CL3-A ISCSI TAR AUT 01 Y PtoP Y 0 None - -
+CL3-B ISCSI TAR AUT 01 Y PtoP Y 0 None - -
+"""
 
 # cmd: raidcom get port -port CL1-A -opt key
 GET_PORT_CL1A_KEY_RESULT = """
@@ -387,21 +383,21 @@ ver&rev: 01-33-03/06
 """
 
 EXECUTE_TABLE = {
-    ('add', 'hba_wwn', '-port', 'CL3-A-0', '-hba_wwn',
-     '0123456789abcdef'): (253, STDOUT, STDERR),
-    ('add', 'host_grp', '-port', 'CL1-A', '-host_grp_name',
-     'HBSD-127.0.0.1'): (
-        SUCCEED, ADD_HOSTGRP_PAIR_RESULT, STDERR),
+    ('add', 'hba_iscsi', '-port', 'CL3-A-0', '-hba_iscsi_name',
+     'iqn-initiator'): (253, STDOUT, STDERR),
     ('add', 'host_grp', '-port', 'CL1-A', '-host_grp_name',
      'HBSD-pair00'): (
         SUCCEED, ADD_HOSTGRP_PAIR_RESULT, STDERR),
-    ('add', 'host_grp', '-port', 'CL1-B-1', '-host_grp_name', 'HBSD-pair00'): (
+    ('add', 'host_grp', '-port', 'CL1-B-1', '-host_grp_name',
+     'HBSD-pair00'): (
         hbsd_horcm.EX_CMDIOE, STDOUT, STDERR),
     ('add', 'host_grp', '-port', 'CL3-A', '-host_grp_name',
-     'HBSD-' + CONFIG_MAP['my_ip']): (
+     'HBSD-' + CONFIG_MAP['my_ip'], '-iscsi_name',
+     'iqn-initiator.hbsd-target'): (
         SUCCEED, ADD_HOSTGRP_RESULT, STDERR),
     ('add', 'host_grp', '-port', 'CL3-B', '-host_grp_name',
-     'HBSD-' + CONFIG_MAP['my_ip']): (
+     'HBSD-' + CONFIG_MAP['my_ip'], '-iscsi_name',
+     'iqn-initiator.hbsd-target'): (
         SUCCEED, ADD_HOSTGRP_RESULT, STDERR),
     ('add', 'host_grp', '-port', 'CL3-B', '-host_grp_name',
      'HBSD-pair00'): (
@@ -423,7 +419,7 @@ EXECUTE_TABLE = {
     ('add', 'snapshot', '-ldev_id', 7, 19, '-pool', 31, '-snapshot_name',
      'HBSD-snap', '-copy_size', 3): (
         hbsd_horcm.EX_CMDRJE, STDOUT, 'SSB=0x2E11,0x2205'),
-    ('cat', '/etc/horcm500.conf'): (SUCCEED, CAT_RESULT),
+    ('cat', '/etc/horcm500.conf'): (SUCCEED, CAT_RESULT, STDERR),
     ('delete', 'host_grp', '-port', 'CL3-A-0',
      'HBSD-' + CONFIG_MAP['my_ip']): (hbsd_horcm.EX_ENOOBJ, STDOUT, STDERR),
     ('delete', 'ldev', '-ldev_id', 2): (
@@ -447,10 +443,10 @@ EXECUTE_TABLE = {
     ('env', 'HORCMINST=203', 'horcmgr', '-check'): (1, STDOUT, STDERR),
     ('extend', 'ldev', '-ldev_id', 3, '-capacity', '128G'): (
         hbsd_horcm.EX_CMDIOE, STDOUT, STDERR),
-    ('get', 'hba_wwn', '-port', 'CL1-A', 'HBSD-' + CONFIG_MAP['my_ip']): (
-        SUCCEED, GET_HBA_WWN_CL1A_HOSTGRP_RESULT, STDERR),
-    ('get', 'hba_wwn', '-port', 'CL1-A-0'): (
-        SUCCEED, GET_HBA_WWN_CL1A0_RESULT, STDERR),
+    ('get', 'hba_iscsi', '-port', 'CL1-A', 'HBSD-' + CONFIG_MAP['my_ip']): (
+        SUCCEED, GET_HBA_ISCSI_CL1A_HOSTGRP_RESULT, STDERR),
+    ('get', 'hba_iscsi', '-port', 'CL1-A-0'): (
+        SUCCEED, GET_HBA_ISCSI_CL1A0_RESULT, STDERR),
     ('get', 'copy_grp'): (SUCCEED, GET_COPY_GRP_RESULT, STDERR),
     ('get', 'device_grp', '-device_grp_name', CG_MAP['cg1'] + 'P'): (
         SUCCEED, GET_DEVICE_GRP_MU1P_RESULT, STDERR),
@@ -526,8 +522,8 @@ EXECUTE_TABLE = {
     ('pairdisplay', '-CLI', '-d', '%s' % CONFIG_MAP['serial'], 10, 0,
      '-IM%s' % INST_NUMS[1]): (
         SUCCEED, PAIRDISPLAY_LDEV7_10_RESULT, STDERR),
-    ('pairdisplay', '-CLI', '-d', '%s' % CONFIG_MAP['serial'], 12, 0,
-     '-IM%s' % INST_NUMS[1]): (
+    ('pairdisplay', '-CLI', '-d', '%s' % CONFIG_MAP['serial'],
+     12, 0, '-IM%s' % INST_NUMS[1]): (
         SUCCEED, PAIRDISPLAY_LDEV7_12_RESULT, STDERR),
     ('pairevtwait', '-d', 'HBSD-ldev-0-1', '-nowait',
      '-ISI%s' % INST_NUMS[1]): (hbsd_horcm.PSUS, STDOUT, STDERR),
@@ -549,7 +545,6 @@ EXECUTE_TABLE = {
      '-IM%s' % INST_NUMS[1]): (hbsd_horcm.SMPL, STDOUT, STDERR),
     ('raidqry', '-h'): (SUCCEED, RAIDQRY_RESULT, STDERR),
     ('tee', '/etc/horcm501.conf'): (1, STDOUT, STDERR),
-    ('-login', 'user', 'pasword'): (SUCCEED, STDOUT, STDERR),
     ('-login', 'userX', 'paswordX'): (hbsd_horcm.EX_ENAUTH, STDOUT, STDERR),
     ('-login', 'userY', 'paswordY'): (hbsd_horcm.EX_COMERR, STDOUT, STDERR),
 }
@@ -560,7 +555,7 @@ ERROR_EXECUTE_TABLE = {
 
 DEFAULT_CONNECTOR = {
     'ip': CONFIG_MAP['my_ip'],
-    'wwpns': ['0123456789abcdef'],
+    'wwpns': ['aaaaaaaaaaaaaaaa', 'bbbbbbbbbbbbbbbb'],
     'initiator': 'iqn-initiator',
     'multipath': False,
 }
@@ -610,7 +605,7 @@ TEST_VOLUME5 = {
     'name': 'test-volume5',
     'provider_location': '5',
     'size': 128,
-    'status': 'in-use',
+    'status': 'available',
 }
 
 TEST_VOLUME6 = {
@@ -618,7 +613,7 @@ TEST_VOLUME6 = {
     'name': 'test-volume6',
     'provider_location': '6',
     'size': 128,
-    'status': 'available',
+    'status': 'in-use',
 }
 
 TEST_VOLUME7 = {
@@ -683,7 +678,7 @@ def _brick_get_connector_properties(*args, **kwargs):
 
 def _brick_get_connector_properties_error(*args, **kwargs):
     connector = dict(DEFAULT_CONNECTOR)
-    del connector['wwpns']
+    del connector['initiator']
     return connector
 
 
@@ -731,12 +726,7 @@ def _fake_exists(path):
     return False
 
 
-class FakeLookupService(object):
-    def get_device_mapping_from_network(self, initiator_wwns, target_wwns):
-        return DEVICE_MAP
-
-
-class HBSDHORCMFCDriverTest(test.TestCase):
+class HBSDHORCMISCSIDriverTest(test.TestCase):
     """Test HBSDHORCMFCDriver."""
 
     test_snapshot0 = {
@@ -853,7 +843,7 @@ class HBSDHORCMFCDriverTest(test.TestCase):
     test_existing_no_ldev_ref = {}
 
     def setUp(self):
-        super(HBSDHORCMFCDriverTest, self).setUp()
+        super(HBSDHORCMISCSIDriverTest, self).setUp()
 
         self.configuration = mock.Mock(conf.Configuration)
         self.ctxt = context.get_admin_context()
@@ -886,7 +876,9 @@ class HBSDHORCMFCDriverTest(test.TestCase):
         self.configuration.hitachi_group_request = True
         self.configuration.hitachi_driver_cert_mode = False
 
-        self.configuration.hitachi_zoning_request = False
+        self.configuration.hitachi_use_chap_auth = False
+        self.configuration.hitachi_auth_user = "HBSD-CHAP-user"
+        self.configuration.hitachi_auth_password = "HBSD-CHAP-password"
 
         self.configuration.hitachi_horcm_numbers = INST_NUMS
         self.configuration.hitachi_horcm_user = "user"
@@ -913,7 +905,8 @@ class HBSDHORCMFCDriverTest(test.TestCase):
     @mock.patch.object(time, 'time', side_effect=_time)
     @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
     def _setup_driver(self, *args):
-        self.driver = hbsd_fc.HBSDFCDriver(
+
+        self.driver = hbsd_iscsi.HBSDISCSIDriver(
             configuration=self.configuration, db=db)
         self.driver.do_setup(None)
         self.driver.check_for_setup_error()
@@ -928,14 +921,14 @@ class HBSDHORCMFCDriverTest(test.TestCase):
     @mock.patch.object(time, 'time', side_effect=_time)
     @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
     def test_do_setup(self, *args):
-        drv = hbsd_fc.HBSDFCDriver(
+        drv = hbsd_iscsi.HBSDISCSIDriver(
             configuration=self.configuration, db=db)
         self._setup_config()
 
         drv.do_setup(None)
         self.assertEqual(
-            {'CL1-A': '0123456789abcdef'},
-            drv.common.storage_info['wwns'])
+            {('CL1-A', '0'): 'iqn-initiator.target'},
+            drv.common.storage_info['iqns'])
 
     @mock.patch.object(
         utils, 'brick_get_connector_properties',
@@ -943,7 +936,7 @@ class HBSDHORCMFCDriverTest(test.TestCase):
     @mock.patch.object(time, 'time', side_effect=_time)
     @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
     def test_do_setup_create_hostgrp(self, *args):
-        drv = hbsd_fc.HBSDFCDriver(
+        drv = hbsd_iscsi.HBSDISCSIDriver(
             configuration=self.configuration, db=db)
         self._setup_config()
         self.configuration.hitachi_target_ports = "CL3-B"
@@ -956,7 +949,7 @@ class HBSDHORCMFCDriverTest(test.TestCase):
     @mock.patch.object(time, 'time', side_effect=_time)
     @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
     def test_do_setup_create_hostgrp_error(self, *args):
-        drv = hbsd_fc.HBSDFCDriver(
+        drv = hbsd_iscsi.HBSDISCSIDriver(
             configuration=self.configuration, db=db)
         self._setup_config()
         self.configuration.hitachi_target_ports = "CL3-A"
@@ -972,7 +965,7 @@ class HBSDHORCMFCDriverTest(test.TestCase):
     @mock.patch.object(os, 'access', side_effect=_access)
     @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
     def test_do_setup_failed_to_create_conf(self, *args):
-        drv = hbsd_fc.HBSDFCDriver(
+        drv = hbsd_iscsi.HBSDISCSIDriver(
             configuration=self.configuration, db=db)
         self._setup_config()
         self.configuration.hitachi_horcm_numbers = (500, 501)
@@ -989,7 +982,7 @@ class HBSDHORCMFCDriverTest(test.TestCase):
     @mock.patch.object(time, 'time', side_effect=_time)
     @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
     def test_do_setup_failed_to_login(self, *args):
-        drv = hbsd_fc.HBSDFCDriver(
+        drv = hbsd_iscsi.HBSDISCSIDriver(
             configuration=self.configuration, db=db)
         self._setup_config()
         self.configuration.hitachi_horcm_user = "userX"
@@ -1006,7 +999,7 @@ class HBSDHORCMFCDriverTest(test.TestCase):
     @mock.patch.object(time, 'time', side_effect=_time)
     @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
     def test_do_setup_failed_to_command(self, *args):
-        drv = hbsd_fc.HBSDFCDriver(
+        drv = hbsd_iscsi.HBSDISCSIDriver(
             configuration=self.configuration, db=db)
         self._setup_config()
         self.configuration.hitachi_horcm_user = "userY"
@@ -1023,7 +1016,7 @@ class HBSDHORCMFCDriverTest(test.TestCase):
     @mock.patch.object(
         hbsd_horcm, '_run_horcmgr', side_effect=_fake_run_horcmgr)
     def test_do_setup_failed_to_horcmshutdown(self, *args):
-        drv = hbsd_fc.HBSDFCDriver(
+        drv = hbsd_iscsi.HBSDISCSIDriver(
             configuration=self.configuration, db=db)
         self._setup_config()
 
@@ -1034,10 +1027,9 @@ class HBSDHORCMFCDriverTest(test.TestCase):
         side_effect=_brick_get_connector_properties_error)
     @mock.patch.object(time, 'time', side_effect=_time)
     @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
-    def test_do_setup_wwn_not_found(self, *args):
-        drv = hbsd_fc.HBSDFCDriver(
+    def test_do_setup_initiator_iqn_not_found(self, *args):
+        drv = hbsd_iscsi.HBSDISCSIDriver(
             configuration=self.configuration, db=db)
-        self._setup_config()
 
         self.assertRaises(exception.HBSDError, drv.do_setup, None)
 
@@ -1047,7 +1039,7 @@ class HBSDHORCMFCDriverTest(test.TestCase):
             TEST_VOLUME_OBJ.get("test-volume0"), 256)
 
     @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
-    def test_extend_volume_volume_provider_location_is_none(self, *args):
+    def test_extend_volume_volume_ldev_is_none(self, *args):
         self.assertRaises(
             exception.HBSDError, self.driver.extend_volume,
             TEST_VOLUME_OBJ.get("test-volume2"), 256)
@@ -1076,7 +1068,6 @@ class HBSDHORCMFCDriverTest(test.TestCase):
 
     @mock.patch.object(hbsd_utils, 'execute', side_effect=_error_execute)
     def test_get_volume_stats_failed_to_get_dp_pool(self, *args):
-        self.driver.common.storage_info['pool_id'] = 29
 
         stats = self.driver.get_volume_stats(True)
         self.assertEqual({}, stats)
@@ -1087,7 +1078,7 @@ class HBSDHORCMFCDriverTest(test.TestCase):
         self.assertEqual('1', ret['provider_location'])
 
     @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
-    def test_create_volume_free_ldev_not_found_on_storage(self, *args):
+    def test_create_volume_free_ldev_not_found(self, *args):
         self.driver.common.storage_info['ldev_range'] = [0, 0]
 
         self.assertRaises(
@@ -1109,11 +1100,11 @@ class HBSDHORCMFCDriverTest(test.TestCase):
         self.driver.delete_volume(TEST_VOLUME_OBJ.get("test-volume0"))
 
     @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
-    def test_delete_volume_provider_location_is_none(self, *args):
+    def test_delete_volume_ldev_is_none(self, *args):
         self.driver.delete_volume(TEST_VOLUME_OBJ.get("test-volume2"))
 
     @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
-    def test_delete_volume_ldev_not_found_on_storage(self, *args):
+    def test_delete_volume_ldev_not_found(self, *args):
         self.driver.delete_volume(TEST_VOLUME_OBJ.get("test-volume3"))
 
     @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
@@ -1129,7 +1120,6 @@ class HBSDHORCMFCDriverTest(test.TestCase):
     @mock.patch.object(db, 'volume_get', side_effect=_volume_get)
     def test_create_snapshot_full(self, *args):
         self.driver.common.storage_info['ldev_range'] = [0, 9]
-
         ret = self.driver.create_snapshot(
             self.TEST_SNAPSHOT_TABLE.get("test-snapshot7"))
         self.assertEqual('8', ret['provider_location'])
@@ -1150,14 +1140,14 @@ class HBSDHORCMFCDriverTest(test.TestCase):
 
     @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
     @mock.patch.object(db, 'volume_get', side_effect=_volume_get)
-    def test_create_snapshot_provider_location_is_none(self, *args):
+    def test_create_snapshot_ldev_is_none(self, *args):
         self.assertRaises(
             exception.HBSDError, self.driver.create_snapshot,
             self.TEST_SNAPSHOT_TABLE.get("test-snapshot2"))
 
     @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
     @mock.patch.object(db, 'volume_get', side_effect=_volume_get)
-    def test_create_snapshot_ldev_not_found_on_storage(self, *args):
+    def test_create_snapshot_ldev_not_found(self, *args):
         self.assertRaises(
             exception.HBSDError, self.driver.create_snapshot,
             self.TEST_SNAPSHOT_TABLE.get("test-snapshot3"))
@@ -1182,12 +1172,12 @@ class HBSDHORCMFCDriverTest(test.TestCase):
             self.TEST_SNAPSHOT_TABLE.get("test-snapshot6"))
 
     @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
-    def test_delete_snapshot_provider_location_is_none(self, *args):
+    def test_delete_snapshot_ldev_is_none(self, *args):
         self.driver.delete_snapshot(
             self.TEST_SNAPSHOT_TABLE.get("test-snapshot2"))
 
     @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
-    def test_delete_snapshot_ldev_not_found_on_storage(self, *args):
+    def test_delete_snapshot_ldev_not_found(self, *args):
         self.driver.delete_snapshot(
             self.TEST_SNAPSHOT_TABLE.get("test-snapshot3"))
 
@@ -1204,10 +1194,10 @@ class HBSDHORCMFCDriverTest(test.TestCase):
         side_effect=_brick_get_connector_properties)
     @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
     @mock.patch.object(
-        brick_connector.FibreChannelConnector,
+        brick_connector.ISCSIConnector,
         'connect_volume', _connect_volume)
     @mock.patch.object(
-        brick_connector.FibreChannelConnector,
+        brick_connector.ISCSIConnector,
         'disconnect_volume', _disconnect_volume)
     def test_create_cloned_volume_with_dd(self, *args):
         self.configuration.hitachi_ldev_range = [0, 9]
@@ -1220,7 +1210,7 @@ class HBSDHORCMFCDriverTest(test.TestCase):
         self.assertEqual('1', vol['provider_location'])
 
     @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
-    def test_create_cloned_volume_provider_location_is_none(self, *args):
+    def test_create_cloned_volume_ldev_is_none(self, *args):
         self.assertRaises(
             exception.HBSDError, self.driver.create_cloned_volume,
             TEST_VOLUME_OBJ.get("test-volume0"),
@@ -1250,8 +1240,7 @@ class HBSDHORCMFCDriverTest(test.TestCase):
             self.TEST_SNAPSHOT_TABLE.get("test-snapshot1"))
 
     @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
-    def test_create_volume_from_snapshot_provider_location_is_none(
-            self, *args):
+    def test_create_volume_from_snapshot_ldev_is_none(self, *args):
         self.assertRaises(
             exception.HBSDError, self.driver.create_volume_from_snapshot,
             TEST_VOLUME_OBJ.get("test-volume0"),
@@ -1263,17 +1252,15 @@ class HBSDHORCMFCDriverTest(test.TestCase):
         side_effect=_volume_admin_metadata_get)
     def test_initialize_connection(self, *args):
         self.configuration.hitachi_target_ports = ["CL1-A", "CL1-B"]
-        self.configuration.hitachi_zoning_request = True
-        self.driver.common._lookup_service = FakeLookupService()
 
         rc = self.driver.initialize_connection(
             TEST_VOLUME_OBJ.get("test-volume0"), DEFAULT_CONNECTOR)
-        self.assertEqual('fibre_channel', rc['driver_volume_type'])
-        self.assertEqual(['0123456789abcdef'], rc['data']['target_wwn'])
+        self.assertEqual('iscsi', rc['driver_volume_type'])
+        self.assertEqual('iqn-initiator.target', rc['data']['target_iqn'])
         self.assertEqual('0', rc['data']['target_lun'])
 
     @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
-    def test_initialize_connection_provider_location_is_none(self, *args):
+    def test_initialize_connection_ldev_is_none(self, *args):
         self.assertRaises(
             exception.HBSDError, self.driver.initialize_connection,
             TEST_VOLUME_OBJ.get("test-volume2"), DEFAULT_CONNECTOR)
@@ -1285,8 +1272,8 @@ class HBSDHORCMFCDriverTest(test.TestCase):
     def test_initialize_connection_already_attached(self, *args):
         rc = self.driver.initialize_connection(
             TEST_VOLUME_OBJ.get("test-volume6"), DEFAULT_CONNECTOR)
-        self.assertEqual('fibre_channel', rc['driver_volume_type'])
-        self.assertEqual(['0123456789abcdef'], rc['data']['target_wwn'])
+        self.assertEqual('iscsi', rc['driver_volume_type'])
+        self.assertEqual('iqn-initiator.target', rc['data']['target_iqn'])
 
     @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
     def test_terminate_connection(self, *args):
@@ -1294,12 +1281,12 @@ class HBSDHORCMFCDriverTest(test.TestCase):
             TEST_VOLUME_OBJ.get("test-volume6"), DEFAULT_CONNECTOR)
 
     @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
-    def test_terminate_connection_provider_location_is_none(self, *args):
+    def test_terminate_connection_ldev_is_none(self, *args):
         self.driver.terminate_connection(
             TEST_VOLUME_OBJ.get("test-volume2"), DEFAULT_CONNECTOR)
 
     @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
-    def test_terminate_connection_ldev_not_found_on_storage(self, *args):
+    def test_terminate_connection_ldev_not_found(self, *args):
         self.configuration.hitachi_target_ports = ["CL1-A", "CL1-B"]
 
         self.driver.terminate_connection(
@@ -1308,7 +1295,7 @@ class HBSDHORCMFCDriverTest(test.TestCase):
     @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
     def test_terminate_connection_initiator_iqn_not_found(self, *args):
         connector = dict(DEFAULT_CONNECTOR)
-        del connector['wwpns']
+        del connector['initiator']
 
         self.assertRaises(
             exception.HBSDError, self.driver.terminate_connection,
@@ -1376,7 +1363,7 @@ class HBSDHORCMFCDriverTest(test.TestCase):
         self.driver.unmanage(TEST_VOLUME_OBJ.get("test-volume0"))
 
     @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)
-    def test_unmanage_provider_location_is_none(self, *args):
+    def test_unmanage_ldev_is_none(self, *args):
         self.driver.unmanage(TEST_VOLUME_OBJ.get("test-volume2"))
 
     @mock.patch.object(hbsd_utils, 'execute', side_effect=_execute)

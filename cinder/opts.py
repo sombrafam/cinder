@@ -279,7 +279,7 @@ def list_opts():
                 cinder_volume_drivers_violin_v6000common.violin_opts,
                 cinder_volume_drivers_emc_xtremio.XTREMIO_OPTS,
                 [cinder_api_middleware_auth.use_forwarded_for_opt],
-                cinder_volume_drivers_hitachi_hbsdcommon.volume_opts,
+                cinder_volume_drivers_hitachi_hbsdcommon.common_opts,
                 cinder_volume_drivers_infortrend_eonstor_ds_cli_commoncli.
                 infortrend_esds_opts,
                 cinder_volume_drivers_infortrend_eonstor_ds_cli_commoncli.
@@ -287,11 +287,11 @@ def list_opts():
                 cinder_volume_drivers_hitachi_hnasiscsi.iSCSI_OPTS,
                 cinder_volume_drivers_rbd.rbd_opts,
                 cinder_volume_drivers_tintri.tintri_opts,
-                cinder_volume_drivers_hitachi_hbsdhorcm.volume_opts,
+                cinder_volume_drivers_hitachi_hbsdhorcm.horcm_opts,
                 cinder_backup_manager.backup_manager_opts,
                 cinder_volume_drivers_ibm_storwize_svc_storwizesvccommon.
                 storwize_svc_opts,
-                cinder_volume_drivers_hitachi_hbsdfc.volume_opts,
+                cinder_volume_drivers_hitachi_hbsdfc.fc_opts,
                 cinder_quota.quota_opts,
                 cinder_volume_drivers_huawei_huaweidriver.huawei_opts,
                 cinder_volume_drivers_dell_dellstoragecentercommon.
@@ -311,7 +311,7 @@ def list_opts():
                 cinder_volume_drivers_hpe_hpexpopts.FC_VOLUME_OPTS,
                 cinder_volume_drivers_hpe_hpexpopts.COMMON_VOLUME_OPTS,
                 cinder_volume_drivers_hpe_hpexpopts.HORCM_VOLUME_OPTS,
-                cinder_volume_drivers_hitachi_hbsdiscsi.volume_opts,
+                cinder_volume_drivers_hitachi_hbsdiscsi.iscsi_opts,
                 cinder_volume_manager.volume_manager_opts,
                 cinder_volume_drivers_nexenta_nexentaedge_iscsi.
                 nexenta_edge_opts,
